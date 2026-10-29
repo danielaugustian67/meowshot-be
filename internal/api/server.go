@@ -46,7 +46,9 @@ type Server struct {
 
 	imageSlots chan struct{} // bounds concurrent image decoding (memory heavy)
 
-	limitAuth    *ratelimit.Limiter
+	limitAuth    *ratelimit.Limiter // per IP: register, login, Google, password reset
+	limitSession *ratelimit.Limiter // per IP: refresh, logout
+	limitLogin   *ratelimit.Limiter // per account: failed password logins
 	limitFriend  *ratelimit.Limiter
 	limitExplore *ratelimit.Limiter
 	limitComment *ratelimit.Limiter
@@ -64,7 +66,9 @@ func New(d Deps) *Server {
 		log:          d.Log,
 		tokens:       auth.NewTokens(d.Config.JWTSecret, d.Config.AccessTokenTTL),
 		imageSlots:   make(chan struct{}, max(1, d.Config.ImageWorkers)),
-		limitAuth:    ratelimit.New(10, time.Minute),
+		limitAuth:    ratelimit.New(60, time.Minute),
+		limitSession: ratelimit.New(300, time.Minute),
+		limitLogin:   ratelimit.New(10, 15*time.Minute),
 		limitFriend:  ratelimit.New(30, time.Hour),
 		limitExplore: ratelimit.New(60, time.Minute),
 		limitComment: ratelimit.New(20, time.Minute),
@@ -90,14 +94,23 @@ func (s *Server) Routes() http.Handler {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(s.rateLimitIP(s.limitAuth))
-			r.Post("/register", s.h(s.register))
-			r.Post("/login", s.h(s.login))
-			r.Post("/google", s.h(s.loginGoogle))
-			r.Post("/refresh", s.h(s.refresh))
-			r.Post("/logout", s.h(s.logout))
-			r.Post("/password/forgot", s.h(s.forgotPassword))
-			r.Post("/password/reset", s.h(s.resetPassword))
+			// Mobile carriers put many users behind one IP (CGNAT), so the per-IP limit is generous;
+			// password guessing is capped per account in login, reset codes per code in the database.
+			r.Group(func(r chi.Router) {
+				r.Use(s.rateLimitIP(s.limitAuth))
+				r.Post("/register", s.h(s.register))
+				r.Post("/login", s.h(s.login))
+				r.Post("/google", s.h(s.loginGoogle))
+				r.Post("/password/forgot", s.h(s.forgotPassword))
+				r.Post("/password/reset", s.h(s.resetPassword))
+			})
+			// Refresh and logout need an unguessable refresh token and run on every app start,
+			// so they only get a loose flood guard.
+			r.Group(func(r chi.Router) {
+				r.Use(s.rateLimitIP(s.limitSession))
+				r.Post("/refresh", s.h(s.refresh))
+				r.Post("/logout", s.h(s.logout))
+			})
 		})
 
 		// Everything below requires a logged-in, non-suspended user (PUB-4).

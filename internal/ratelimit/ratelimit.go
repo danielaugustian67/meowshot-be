@@ -40,6 +40,15 @@ func (l *Limiter) Allow(key string) bool {
 	return b.lim.Allow()
 }
 
+// Exhausted reports whether key has no events left, without using one. Pair it with Allow to
+// count only some outcomes, e.g. failed logins.
+func (l *Limiter) Exhausted(key string) bool {
+	l.mu.Lock()
+	b, ok := l.buckets[key]
+	l.mu.Unlock()
+	return ok && b.lim.Tokens() < 1
+}
+
 func (l *Limiter) sweep() {
 	for range time.Tick(10 * time.Minute) {
 		l.mu.Lock()

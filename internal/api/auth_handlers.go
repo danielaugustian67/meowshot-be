@@ -146,14 +146,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 	var suspended *time.Time
 	err := s.db.QueryRow(r.Context(), `SELECT id, password_hash, suspended_at FROM users WHERE email = $1 OR username = $1`, ident).
 		Scan(&id, &hash, &suspended)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && hash == nil) {
-		auth.BurnPasswordCheck(in.Password)
-		return errUnauthorized("wrong email or password")
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
+	// Failed attempts are counted per account (email and username share the user ID key), so
+	// guessing is capped no matter how many IPs it comes from.
+	key := "id:" + itoa(id)
+	if id == 0 {
+		key = "ident:" + ident
+	}
+	if s.limitLogin.Exhausted(key) {
+		return &Error{http.StatusTooManyRequests, "too_many_attempts", "too many failed logins for this account, try again in a few minutes"}
+	}
+	if hash == nil {
+		auth.BurnPasswordCheck(in.Password)
+		s.limitLogin.Allow(key)
+		return errUnauthorized("wrong email or password")
+	}
 	if match, err := auth.VerifyPassword(in.Password, *hash); err != nil || !match {
+		s.limitLogin.Allow(key)
 		return errUnauthorized("wrong email or password")
 	}
 	if suspended != nil {

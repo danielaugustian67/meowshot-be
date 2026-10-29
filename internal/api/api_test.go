@@ -227,6 +227,29 @@ func TestAPIEndToEnd(t *testing.T) {
 	carol, carolID := e.register("carol")
 	_ = bobID
 
+	t.Run("login rate limits", func(t *testing.T) {
+		e.register("dave")
+		for range 10 {
+			e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "dave@example.com", "password": "nope"}), 401)
+		}
+		// Locked by user ID: the username is blocked too, even with the right password.
+		r := e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "dave", "password": "password-dave"}), 429)
+		if r.str("error.code") != "too_many_attempts" {
+			t.Fatalf("lockout error: %s", r.Raw)
+		}
+		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "alice", "password": "password-alice"}), 200)
+
+		// A shared carrier IP that used up the auth limit can still refresh sessions.
+		r = e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "bob", "password": "password-bob"}), 200)
+		orig, saved := e.srv, e.s.limitAuth
+		e.s.limitAuth = ratelimit.New(1, time.Hour)
+		e.srv = httptest.NewServer(e.s.Routes())
+		defer func() { e.srv.Close(); e.srv, e.s.limitAuth = orig, saved }()
+		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "bob", "password": "x"}), 401)
+		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "bob", "password": "password-bob"}), 429)
+		e.expect(e.do("", "POST", "/v1/auth/refresh", map[string]any{"refresh_token": r.str("refresh_token")}), 200)
+	})
+
 	t.Run("auth", func(t *testing.T) {
 		e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{"email": "ALICE@example.com", "password": "password1", "username": "alice2"}), 409)
 		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "alice@example.com", "password": "wrong-password"}), 401)

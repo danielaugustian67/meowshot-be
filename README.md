@@ -188,7 +188,7 @@ const res = await fetch(`${API}/v1/captures`, {
 
 ### Error
 
-Semua error berbentuk `{"error": {"code": "...", "message": "..."}}`. Kode penting: `unauthorized`, `account_suspended`, `rate_limited`, `validation_failed`, `username_taken`, `email_taken`, `invite_required`.
+Semua error berbentuk `{"error": {"code": "...", "message": "..."}}`. Kode penting: `unauthorized`, `account_suspended`, `rate_limited`, `too_many_attempts` (login akun ini dikunci sementara setelah 10 password salah), `validation_failed`, `username_taken`, `email_taken`, `invite_required`.
 
 ### Pagination
 
@@ -244,7 +244,7 @@ Semua di bawah prefix `/v1`.
 - Kucing, foto, dan sighting yang belum diposting hanya bisa diakses pemiliknya.
 - Lokasi dikaburkan di server. `APPROX` menggeser titik 60–200 m secara deterministik (HMAC dari `LOCATION_SECRET` + id sighting), jadi refresh berulang tidak bisa dirata-ratakan. `HIDDEN` hanya mengirim label. Pemilik post mendapat `location` (asli) dan `shared_location` (yang dilihat orang lain) untuk pratinjau peringatan `EXACT`.
 - Foto disimpan ulang dari piksel, jadi tidak ada metadata EXIF yang ikut ke B2.
-- Rate limit (in-memory, cukup untuk satu server): auth 10/menit per IP, friend request 30/jam, explore 60/menit, komentar 20/menit, report 10/jam, upload 60/menit per user.
+- Rate limit (in-memory, cukup untuk satu server): register/login/Google/reset password 60/menit per IP (longgar karena banyak user seluler berbagi satu IP), refresh/logout 300/menit per IP, login gagal 10 per 15 menit per akun, friend request 30/jam, explore 60/menit, komentar 20/menit, report 10/jam, upload 60/menit per user.
 
 ## Keputusan yang berbeda dari PRD
 
