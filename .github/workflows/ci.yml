@@ -1,0 +1,92 @@
+# CI on every push and pull request; CD to the VPS after tests pass on main.
+# Deploy is a no-op until VPS_HOST is set as a repository secret or variable (see README "CI/CD").
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: Docker image builds
+        run: docker build -t meowshot:ci .
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency: deploy-production
+    # Each setting may be stored as a secret or a variable.
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST || vars.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER || vars.VPS_USER }}
+      API_DOMAIN: ${{ secrets.API_DOMAIN || vars.API_DOMAIN }}
+      APP_DIR: /opt/meowshot
+    steps:
+      - name: Check deploy settings
+        id: cfg
+        run: |
+          if [ -z "$VPS_HOST" ]; then
+            echo "::notice::VPS_HOST is not set; skipping deploy."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "TARGET=$VPS_USER@$VPS_HOST" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.ready
+      - name: Set up SSH
+        if: steps.cfg.outputs.ready
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS || vars.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      # .env.production and backups/ live only on the VPS; excluded paths are never deleted.
+      - name: Upload code
+        if: steps.cfg.outputs.ready
+        run: rsync -az --delete --exclude .git --exclude '.env*' --exclude backups/ ./ "$TARGET:$APP_DIR/"
+      - name: Build and restart
+        if: steps.cfg.outputs.ready
+        run: |
+          ssh "$TARGET" "cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production up -d --build --remove-orphans && docker image prune -f"
+      - name: Health check
+        if: steps.cfg.outputs.ready
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS "https://$API_DOMAIN/healthz" && exit 0
+            sleep 5
+          done
+          echo "API did not become healthy" >&2
+          ssh "$TARGET" "cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production logs --tail 50 api"
+          exit 1

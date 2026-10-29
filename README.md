@@ -141,6 +141,59 @@ Catatan:
 - Rate limit disimpan di memori API, jadi reset setiap restart. Untuk satu VPS ini cukup.
 - `IMAGE_WORKERS=1` mencegah dua foto besar di-decode bersamaan di VPS kecil.
 
+## CI/CD (GitHub Actions)
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) berjalan otomatis:
+
+- **CI** (setiap push dan pull request): `gofmt`, `go vet`, semua tes dengan Postgres, dan build image Docker.
+- **CD** (push ke `main` yang lolos CI): kode dikirim ke VPS dengan rsync, lalu `docker compose up -d --build` dan cek `https://API_DOMAIN/healthz`. Job ini dilewati selama variable `VPS_HOST` belum diisi, jadi CI tetap hijau sebelum VPS siap.
+
+`.env.production` dan `backups/` hanya ada di VPS dan tidak pernah disentuh pipeline. Deploy pertama tetap manual (bagian "Deploy ke VPS" di atas), karena `.env.production` harus sudah ada di `/opt/meowshot`.
+
+### Setup sekali saja
+
+1. Di VPS, buat user khusus deploy yang boleh menjalankan Docker:
+
+```bash
+adduser --disabled-password --gecos "" deploy && usermod -aG docker deploy && apt-get install -y rsync && chown -R deploy:deploy /opt/meowshot
+```
+
+2. Di laptop, buat SSH key khusus GitHub Actions (tanpa passphrase):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/meowshot_deploy -N "" -C github-actions
+```
+
+3. Pasang public key-nya di VPS lewat root (user `deploy` tidak punya password, jadi `ssh-copy-id` tidak bisa dipakai):
+
+```bash
+ssh root@IP_VPS "install -d -m 700 -o deploy -g deploy /home/deploy/.ssh && cat >> /home/deploy/.ssh/authorized_keys && chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 600 /home/deploy/.ssh/authorized_keys" < ~/.ssh/meowshot_deploy.pub
+```
+
+Cek berhasil (harus menampilkan daftar container, bukan minta password):
+
+```bash
+ssh -i ~/.ssh/meowshot_deploy deploy@IP_VPS docker ps
+```
+
+4. Ambil fingerprint VPS untuk `VPS_KNOWN_HOSTS` (supaya Actions tidak bisa disusupi server palsu):
+
+```bash
+ssh-keyscan -t ed25519 IP_VPS
+```
+
+5. Di GitHub: repo → **Settings** → **Secrets and variables** → **Actions**.
+
+| Jenis | Nama | Isi |
+|---|---|---|
+| Secret (wajib) | `VPS_SSH_KEY` | Isi file `~/.ssh/meowshot_deploy` (private key, termasuk baris BEGIN/END) |
+| Secret atau Variable | `VPS_HOST` | IP VPS |
+| Secret atau Variable | `VPS_USER` | `deploy` |
+| Secret atau Variable | `VPS_KNOWN_HOSTS` | Output `ssh-keyscan` di langkah 4 |
+| Secret atau Variable | `API_DOMAIN` | `api.zyros.me` |
+
+Setelah itu setiap `git push` ke `main` otomatis dites lalu dideploy. Progresnya terlihat di tab **Actions**. Deploy manual bisa dipicu dari tab Actions → **CI/CD** → **Run workflow**.
+
 ## Setup Backblaze B2 (production)
 
 1. Buat bucket **Private** (misal `meowshot-photos`). Endpoint S3 terlihat di halaman bucket, misal `s3.us-west-004.backblazeb2.com` → `B2_ENDPOINT=https://s3.us-west-004.backblazeb2.com`, `B2_REGION=us-west-004`.
