@@ -1,0 +1,53 @@
+# Production on a single VPS: Postgres + API + Caddy (automatic HTTPS via Let's Encrypt).
+#   cp .env.production.example .env.production   # fill it in
+#   docker compose -f compose.prod.yml --env-file .env.production up -d --build
+# Only Caddy is reachable from the internet; Postgres and the API stay on the internal network.
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: meowshot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: meowshot
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meowshot -d meowshot"]
+      interval: 5s
+      retries: 20
+    logging: *logging
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: postgres://meowshot:${POSTGRES_PASSWORD}@db:5432/meowshot?sslmode=disable
+      ADDR: ":8080"
+      TRUST_PROXY: "true" # Caddy sets X-Forwarded-For
+    depends_on:
+      db: { condition: service_healthy }
+    logging: *logging
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.production}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # TLS certificates; keep this volume
+      - caddy_config:/config
+    depends_on: [api]
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

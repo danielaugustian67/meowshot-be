@@ -63,7 +63,7 @@ func New(d Deps) *Server {
 		mail:         d.Mail,
 		log:          d.Log,
 		tokens:       auth.NewTokens(d.Config.JWTSecret, d.Config.AccessTokenTTL),
-		imageSlots:   make(chan struct{}, 2),
+		imageSlots:   make(chan struct{}, max(1, d.Config.ImageWorkers)),
 		limitAuth:    ratelimit.New(10, time.Minute),
 		limitFriend:  ratelimit.New(30, time.Hour),
 		limitExplore: ratelimit.New(60, time.Minute),
@@ -76,7 +76,7 @@ func New(d Deps) *Server {
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	if s.cfg.TrustProxy {
-		r.Use(middleware.RealIP)
+		r.Use(proxyClientIP)
 	}
 	r.Use(middleware.RequestID, s.requestLogger, middleware.Recoverer, cors)
 
@@ -245,6 +245,30 @@ func (s *Server) rateLimitUser(l *ratelimit.Limiter) func(http.Handler) http.Han
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// proxyClientIP replaces RemoteAddr with the address the proxy saw. Caddy (and a typical Nginx
+// setup) appends the connecting IP to X-Forwarded-For, so only the last entry is
+// trustworthy; earlier entries come from the client and could be forged to dodge rate limits.
+func proxyClientIP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ip := lastForwardedFor(r.Header.Values("X-Forwarded-For")); ip != "" {
+			r.RemoteAddr = net.JoinHostPort(ip, "0")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func lastForwardedFor(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := strings.Split(values[len(values)-1], ",")
+	ip := strings.TrimSpace(parts[len(parts)-1])
+	if net.ParseIP(ip) == nil {
+		return ""
+	}
+	return ip
 }
 
 func clientIP(r *http.Request) string {

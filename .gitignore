@@ -1,4 +1,8 @@
-.env
+# Env files hold secrets; only the templates are committed.
+.env*
+!.env.example
+!.env.production.example
+backups/
 /bin/
 /meowshot
 *.test

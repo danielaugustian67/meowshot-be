@@ -32,6 +32,7 @@ type Config struct {
 	SMTP SMTPConfig
 
 	MaxUploadBytes int64
+	ImageWorkers   int // concurrent image decodes; each can take ~150 MB for a large photo
 }
 
 // StorageConfig targets any S3-compatible API. In production this is Backblaze B2
@@ -56,7 +57,7 @@ type SMTPConfig struct {
 func Load() (*Config, error) {
 	c := &Config{
 		Env:             env("APP_ENV", "development"),
-		Addr:            env("ADDR", ":8080"),
+		Addr:            env("ADDR", ":"+env("PORT", "8080")), // some hosts provide PORT
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		TrustProxy:      envBool("TRUST_PROXY", false),
 		JWTSecret:       []byte(os.Getenv("JWT_SECRET")),
@@ -82,6 +83,7 @@ func Load() (*Config, error) {
 			From:     env("SMTP_FROM", "Meowshot <no-reply@meowshot.app>"),
 		},
 		MaxUploadBytes: int64(envInt("MAX_UPLOAD_MB", 15)) << 20,
+		ImageWorkers:   max(1, envInt("IMAGE_WORKERS", 2)),
 	}
 
 	var errs []error

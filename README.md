@@ -47,6 +47,100 @@ Tes (butuh Postgres kosong; schema `public` akan dihapus):
 TEST_DATABASE_URL="postgres://meowshot:meowshot@localhost:5432/meowshot_test?sslmode=disable" go test ./...
 ```
 
+## Deploy ke VPS
+
+Satu VPS menjalankan tiga container lewat [compose.prod.yml](compose.prod.yml): Postgres, API, dan Caddy (HTTPS otomatis dari Let's Encrypt, lihat [Caddyfile](Caddyfile)). Hanya port 80/443 yang terbuka ke internet. Panduan ini mengasumsikan Ubuntu/Debian dengan RAM minimal 1 GB.
+
+### 1. Siapkan server (sekali saja)
+
+Login sebagai root (atau user dengan sudo), lalu pasang Docker:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+Buka firewall untuk SSH, HTTP, dan HTTPS:
+
+```bash
+ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 443/udp && ufw --force enable
+```
+
+Kalau RAM 1 GB, tambahkan swap supaya build Go dan decode foto tidak kehabisan memori:
+
+```bash
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+### 2. Domain
+
+Buat A record (misal `api.domainmu.com`) yang mengarah ke IP VPS. Belum punya domain? Pakai `IP-dengan-strip.sslip.io`, misal VPS `203.0.113.10` → `203-0-113-10.sslip.io`. Ini langsung jalan tanpa setting DNS.
+
+### 3. Kirim kode ke VPS
+
+Paling mudah lewat repo GitHub privat (`git clone` di VPS ke `/opt/meowshot`). Tanpa GitHub, kirim dari laptop dengan rsync:
+
+```bash
+rsync -az --exclude .git --exclude '.env*' ./ root@IP_VPS:/opt/meowshot/
+```
+
+### 4. Isi env dan jalankan
+
+Di VPS:
+
+```bash
+cd /opt/meowshot && cp .env.production.example .env.production && chmod 600 .env.production
+```
+
+Isi `.env.production` (`nano .env.production`). `DATABASE_URL`, `ADDR`, dan `TRUST_PROXY` sudah diatur di compose, jadi tidak perlu diisi. Buat `POSTGRES_PASSWORD`, `JWT_SECRET`, dan `LOCATION_SECRET` masing-masing dengan:
+
+```bash
+openssl rand -hex 32
+```
+
+Lalu build dan jalankan:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env.production up -d --build
+```
+
+Cek log sampai muncul `listening`, dan pastikan Caddy berhasil mengambil sertifikat:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env.production logs -f api caddy
+```
+
+Tes dari laptop: `curl https://DOMAIN/healthz`. Base URL untuk app mobile: `https://DOMAIN/v1`.
+
+Setelah daftar akun lewat app, jadikan dirimu admin:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env.production exec api meowshot promote email@kamu.com
+```
+
+### Update versi
+
+Kirim kode baru (`git pull` atau rsync lagi), lalu jalankan ulang perintah `up -d --build` di atas. Migrasi database jalan otomatis saat API start.
+
+### Backup database
+
+[scripts/backup-db.sh](scripts/backup-db.sh) menyimpan dump ke `backups/` dan menghapus yang lebih dari 14 hari. Jadwalkan tiap jam 3 pagi dengan `crontab -e`:
+
+```
+0 3 * * * cd /opt/meowshot && ./scripts/backup-db.sh >> backups/backup.log 2>&1
+```
+
+Backup ini masih di VPS yang sama; sesekali salin ke laptop atau ke bucket B2 terpisah. Foto sudah aman di B2. Restore:
+
+```bash
+gunzip -c backups/FILE.sql.gz | docker compose -f compose.prod.yml --env-file .env.production exec -T db psql -U meowshot -d meowshot
+```
+
+Catatan:
+
+- Volume `caddy_data` menyimpan sertifikat HTTPS. Jangan dihapus, karena Let's Encrypt membatasi jumlah penerbitan ulang.
+- Rate limit disimpan di memori API, jadi reset setiap restart. Untuk satu VPS ini cukup.
+- `IMAGE_WORKERS=1` mencegah dua foto besar di-decode bersamaan di VPS kecil.
+
 ## Setup Backblaze B2 (production)
 
 1. Buat bucket **Private** (misal `meowshot-photos`). Endpoint S3 terlihat di halaman bucket, misal `s3.us-west-004.backblazeb2.com` → `B2_ENDPOINT=https://s3.us-west-004.backblazeb2.com`, `B2_REGION=us-west-004`.
