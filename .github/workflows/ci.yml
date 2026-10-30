@@ -78,10 +78,11 @@ jobs:
       - name: Upload code
         if: steps.cfg.outputs.ready
         run: rsync -az --delete --exclude .git --exclude '.env*' --exclude backups/ ./ "$TARGET:$APP_DIR/"
+      # Each build on the server leaves ~1 GB of Go build cache; drop it to stay small in deploy-daniel's quota.
       - name: Build and restart
         if: steps.cfg.outputs.ready
         run: |
-          ssh "$TARGET" "export XDG_RUNTIME_DIR=/run/user/\$(id -u) && cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production up -d --build --remove-orphans && docker image prune -f"
+          ssh "$TARGET" "export XDG_RUNTIME_DIR=/run/user/\$(id -u) && cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production up -d --build --remove-orphans && docker image prune -f && docker builder prune -af"
       - name: Health check
         if: steps.cfg.outputs.ready
         run: |
