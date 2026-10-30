@@ -146,6 +146,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/users/search", s.h(s.searchUsers))
 			r.Get("/users/{username}", s.h(s.getProfile))
 			r.Get("/users/{username}/posts", s.h(s.listUserPosts))
+			r.Get("/users/{username}/cats", s.h(s.listUserCats))
 
 			r.Get("/friends", s.h(s.listFriends))
 			r.Delete("/friends/{userID}", s.h(s.removeFriend))

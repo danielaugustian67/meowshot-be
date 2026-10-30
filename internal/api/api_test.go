@@ -412,6 +412,18 @@ func TestAPIEndToEnd(t *testing.T) {
 		if p.num("post_count") != 1 || p.str("relationship.status") != "none" {
 			t.Fatalf("profile: %s", p.Raw)
 		}
+
+		// The collection is for friends: names and covers only, never notes or sightings.
+		e.expect(e.do(carol, "GET", "/v1/users/alice/cats", nil), 403)
+		cats := e.expect(e.do(bob, "GET", "/v1/users/alice/cats", nil), 200)
+		if cats.num("items.0.id") != float64(catID) || cats.get("items.0.cover") == nil {
+			t.Fatalf("friend's collection: %s", cats.Raw)
+		}
+		if strings.Contains(string(cats.Raw), "notes") || strings.Contains(string(cats.Raw), "sighting") {
+			t.Fatalf("collection leaked private fields: %s", cats.Raw)
+		}
+		e.expect(e.do(alice, "GET", "/v1/users/alice/cats", nil), 200)
+		e.expect(e.do(bob, "GET", "/v1/users/nobody/cats", nil), 404)
 	})
 
 	t.Run("interactions and blocking", func(t *testing.T) {

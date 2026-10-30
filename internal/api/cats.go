@@ -8,14 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
 	"meowshot/internal/geo"
 	"meowshot/internal/media"
 )
 
-// Cats, their photos and sightings are private to the owner. Other users only ever see a cat
-// through a post (posts.go), so every handler here filters on user_id.
+// Cats, their photos and sightings are private to the owner. Other users see a cat through a post
+// (posts.go), and friends see the collection's names and covers (listUserCats), never its notes,
+// photos or sightings. Every other handler here filters on user_id.
 
 type photoJSON struct {
 	ID        int64      `json:"id"`
@@ -141,6 +143,68 @@ func (s *Server) listCats(w http.ResponseWriter, r *http.Request) error {
 		c, err := s.scanCat(ctx, rows)
 		if err != nil {
 			return err
+		}
+		out.Items = append(out.Items, c)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(out.Items) > pg.Limit {
+		out.Items = out.Items[:pg.Limit]
+		next := strconv.FormatInt(pg.Cursor+int64(pg.Limit), 10)
+		out.NextCursor = &next
+	}
+	return ok(w, out)
+}
+
+// collectionCatJSON is a cat as a friend sees it in the owner's collection: no notes or sightings.
+type collectionCatJSON struct {
+	ID         int64      `json:"id"`
+	Name       *string    `json:"name"`
+	IsFavorite bool       `json:"is_favorite"`
+	Cover      *coverJSON `json:"cover"`
+	PhotoCount int        `json:"photo_count"`
+}
+
+// listUserCats: GET /users/{username}/cats?cursor=&limit= — the collection, for its owner and their
+// friends only (403 for everyone else). Blocked or suspended users answer 404, as their profile does.
+func (s *Server) listUserCats(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	viewer := userFrom(ctx).ID
+	var uid int64
+	var allowed bool
+	err := s.db.QueryRow(ctx, `SELECT u.id, u.id = $1 OR `+friendsSQL("$1::bigint", "u.id")+`
+		FROM users u WHERE u.username = $2 AND `+userVisibleSQL("$1"),
+		viewer, strings.ToLower(chi.URLParam(r, "username"))).Scan(&uid, &allowed)
+	if err == pgx.ErrNoRows {
+		return errNotFound("user")
+	}
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return errForbidden("only friends can see this collection")
+	}
+	pg := readPage(r, 30, 100)
+	rows, err := s.db.Query(ctx, `SELECT c.id, c.name, c.is_favorite, cp.id, cp.key, cp.thumb_key,
+		(SELECT count(*) FROM photos ph WHERE ph.cat_id = c.id)
+		FROM cats c LEFT JOIN photos cp ON cp.id = c.cover_photo_id
+		WHERE c.user_id = $1 ORDER BY c.is_favorite DESC, c.created_at DESC, c.id DESC LIMIT $2 OFFSET $3`,
+		uid, pg.Limit+1, pg.Cursor)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	out := list[collectionCatJSON]{Items: []collectionCatJSON{}}
+	for rows.Next() {
+		var c collectionCatJSON
+		var coverID *int64
+		var coverKey, coverThumb *string
+		if err := rows.Scan(&c.ID, &c.Name, &c.IsFavorite, &coverID, &coverKey, &coverThumb, &c.PhotoCount); err != nil {
+			return err
+		}
+		if coverID != nil {
+			c.Cover = &coverJSON{PhotoID: *coverID, URL: s.signed(ctx, coverKey), ThumbURL: s.signed(ctx, coverThumb)}
 		}
 		out.Items = append(out.Items, c)
 	}

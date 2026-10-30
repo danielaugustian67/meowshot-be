@@ -233,6 +233,7 @@ Semua di bawah prefix `/v1`.
 | `GET /map/cats` | satu marker per kucing (sighting terakhir yang punya koordinat) | LOC-5 |
 | `GET /users/search?q=` | prefix username | FR-1 |
 | `GET /users/{username}`, `GET /users/{username}/posts` | profil + post yang boleh dilihat | PROF-1, PROF-2, PUB-5 |
+| `GET /users/{username}/cats` | koleksi kucing (nama + sampul saja); hanya pemilik dan teman, lainnya 403 | PROF-1 |
 | `GET /friends`, `DELETE /friends/{userId}` | | FR-3, FR-4 |
 | `GET /friends/requests?direction=incoming\|outgoing` | | FR-2 |
 | `POST /friends/requests` `{username}` | otomatis diterima kalau pihak lain sudah mengirim request | FR-2 |
