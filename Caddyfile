@@ -1,6 +1,7 @@
-# Caddy obtains and renews the HTTPS certificate for $DOMAIN automatically.
-# Ports 80 and 443 must be open and DOMAIN must resolve to this server's IP.
-{$DOMAIN} {
+# Site block for the VPS's existing Caddy. Append it to /etc/caddy/Caddyfile, then:
+#   sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+# Caddy obtains the HTTPS certificate once the domain's A record points to the VPS.
+meowshot-api.zyros.me {
 	encode zstd gzip
-	reverse_proxy api:8080
+	reverse_proxy 127.0.0.1:18080
 }

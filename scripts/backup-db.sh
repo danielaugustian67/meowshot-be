@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Dumps the production Postgres to backups/meowshot-YYYYmmdd-HHMMSS.sql.gz and keeps 14 days.
 # Run from the repo root on the VPS; schedule with cron, e.g.:
-#   0 3 * * * cd /opt/meowshot && ./scripts/backup-db.sh >> backups/backup.log 2>&1
+#   0 3 * * * cd ~/apps/meowshot-api && ./scripts/backup-db.sh >> backups/backup.log 2>&1
 set -euo pipefail
+
+# Rootless Docker needs the user's runtime dir, which cron does not set.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 cd "$(dirname "$0")/.."
 mkdir -p backups

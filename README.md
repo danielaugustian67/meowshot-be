@@ -49,87 +49,74 @@ TEST_DATABASE_URL="postgres://meowshot:meowshot@localhost:5432/meowshot_test?ssl
 
 ## Deploy ke VPS
 
-Satu VPS menjalankan tiga container lewat [compose.prod.yml](compose.prod.yml): Postgres, API, dan Caddy (HTTPS otomatis dari Let's Encrypt, lihat [Caddyfile](Caddyfile)). Hanya port 80/443 yang terbuka ke internet. Panduan ini mengasumsikan Ubuntu/Debian dengan RAM minimal 1 GB.
+VPS ini dipakai bersama tim. Aturan lengkapnya ada di panduan tim (`/srv/tim/deploy-vps-guide.md` di server). Ringkasnya untuk Meowshot:
 
-### 1. Siapkan server (sekali saja)
+| | |
+|---|---|
+| Akun | `deploy-daniel` (tanpa sudo, Docker rootless, jatah 1,5 GB RAM / 0,75 CPU) |
+| Folder | `~/apps/meowshot-api` milik `deploy-daniel` |
+| Port | `127.0.0.1:18080`, HTTPS lewat Caddy server dengan blok dari [Caddyfile](Caddyfile) |
+| Image | Dari gudang tim `10.3.11.234:5000`: `golang:1.27-alpine` (build) dan `postgres:18-alpine`. Image API final berbasis `scratch`. |
 
-Login sebagai root (atau user dengan sudo), lalu pasang Docker:
-
-```bash
-curl -fsSL https://get.docker.com | sh
-```
-
-Buka firewall untuk SSH, HTTP, dan HTTPS:
-
-```bash
-ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 443/udp && ufw --force enable
-```
-
-Kalau RAM 1 GB, tambahkan swap supaya build Go dan decode foto tidak kehabisan memori:
+Pekerjaan admin (sudo, Caddy) lewat `vps-daniel`. Pekerjaan aplikasi langsung sebagai `deploy-daniel` dengan kuncinya; jangan `sudo -u deploy-daniel` dan jangan `sudo docker`, karena keduanya lolos dari jatah akun. Contoh di bawah memakai alias ini (cukup sekali per terminal):
 
 ```bash
-fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
+alias dd-ssh='ssh -i ~/VPS/kunci-deploy/github-actions-deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=~/VPS/kunci-deploy/known_hosts deploy-daniel@43.134.103.221'
 ```
 
-### 2. Domain
+### 1. Domain dan Caddy (admin, sekali saja)
 
-Buat A record (misal `api.domainmu.com`) yang mengarah ke IP VPS. Belum punya domain? Pakai `IP-dengan-strip.sslip.io`, misal VPS `203.0.113.10` → `203-0-113-10.sslip.io`. Ini langsung jalan tanpa setting DNS.
-
-### 3. Kirim kode ke VPS
-
-Paling mudah lewat repo GitHub privat (`git clone` di VPS ke `/opt/meowshot`). Tanpa GitHub, kirim dari laptop dengan rsync:
+Buat A record `meowshot-api` → `43.134.103.221` di DNS `zyros.me`. Lalu tambahkan blok dari [Caddyfile](Caddyfile) ke Caddy server:
 
 ```bash
-rsync -az --exclude .git --exclude '.env*' ./ root@IP_VPS:/opt/meowshot/
+ssh vps-daniel "sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak-meowshot && sudo tee -a /etc/caddy/Caddyfile >/dev/null && sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy" < Caddyfile
 ```
 
-### 4. Isi env dan jalankan
+`caddy validate` membatalkan reload kalau konfigurasinya salah, jadi situs lain di Caddy tetap aman.
 
-Di VPS:
+### 2. Kirim env (sekali saja)
+
+`.env.production` (dari [.env.production.example](.env.production.example)) diisi di laptop lalu dikirim sekali; pipeline tidak pernah menyentuh file ini. Buat `POSTGRES_PASSWORD`, `JWT_SECRET`, dan `LOCATION_SECRET` masing-masing dengan `openssl rand -hex 32`.
 
 ```bash
-cd /opt/meowshot && cp .env.production.example .env.production && chmod 600 .env.production
+dd-ssh "mkdir -p ~/apps/meowshot-api && umask 077 && cat > ~/apps/meowshot-api/.env.production" < .env.production
 ```
 
-Isi `.env.production` (`nano .env.production`). `DATABASE_URL`, `ADDR`, dan `TRUST_PROXY` sudah diatur di compose, jadi tidak perlu diisi. Buat `POSTGRES_PASSWORD`, `JWT_SECRET`, dan `LOCATION_SECRET` masing-masing dengan:
+### 3. Jalankan
+
+Push ke `main`, dan GitHub Actions mengirim kode lalu menjalankan `docker compose up -d --build` (bagian CI/CD). Tanpa GitHub, dari laptop:
 
 ```bash
-openssl rand -hex 32
+rsync -az --delete --exclude .git --exclude '.env*' --exclude backups/ -e "ssh -i ~/VPS/kunci-deploy/github-actions-deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=~/VPS/kunci-deploy/known_hosts" ./ deploy-daniel@43.134.103.221:apps/meowshot-api/
 ```
-
-Lalu build dan jalankan:
 
 ```bash
-docker compose -f compose.prod.yml --env-file .env.production up -d --build
+dd-ssh "cd ~/apps/meowshot-api && docker compose -f compose.prod.yml --env-file .env.production up -d --build"
 ```
 
-Cek log sampai muncul `listening`, dan pastikan Caddy berhasil mengambil sertifikat:
+Tes: `curl https://meowshot-api.zyros.me/healthz`. Base URL untuk app mobile: `https://meowshot-api.zyros.me/v1`.
+
+Log API:
 
 ```bash
-docker compose -f compose.prod.yml --env-file .env.production logs -f api caddy
+dd-ssh "cd ~/apps/meowshot-api && docker compose -f compose.prod.yml --env-file .env.production logs -f api"
 ```
-
-Tes dari laptop: `curl https://DOMAIN/healthz`. Base URL untuk app mobile: `https://DOMAIN/v1`.
 
 Setelah daftar akun lewat app, jadikan dirimu admin:
 
 ```bash
-docker compose -f compose.prod.yml --env-file .env.production exec api meowshot promote email@kamu.com
+dd-ssh "cd ~/apps/meowshot-api && docker compose -f compose.prod.yml --env-file .env.production exec api /meowshot promote email@kamu.com"
 ```
-
-### Update versi
-
-Kirim kode baru (`git pull` atau rsync lagi), lalu jalankan ulang perintah `up -d --build` di atas. Migrasi database jalan otomatis saat API start.
 
 ### Backup database
 
-[scripts/backup-db.sh](scripts/backup-db.sh) menyimpan dump ke `backups/` dan menghapus yang lebih dari 14 hari. Jadwalkan tiap jam 3 pagi dengan `crontab -e`:
+[scripts/backup-db.sh](scripts/backup-db.sh) menyimpan dump ke `backups/` dan menghapus yang lebih dari 14 hari. Jadwalkan tiap jam 3 pagi di crontab `deploy-daniel` (`dd-ssh -t crontab -e`):
 
 ```
-0 3 * * * cd /opt/meowshot && ./scripts/backup-db.sh >> backups/backup.log 2>&1
+0 3 * * * cd ~/apps/meowshot-api && ./scripts/backup-db.sh >> backups/backup.log 2>&1
 ```
 
-Backup ini masih di VPS yang sama; sesekali salin ke laptop atau ke bucket B2 terpisah. Foto sudah aman di B2. Restore:
+Backup ini masih di VPS yang sama dan memakai jatah disk `deploy-daniel`; sesekali salin ke laptop atau ke bucket B2 terpisah. Foto sudah aman di B2. Restore (di `~/apps/meowshot-api`):
 
 ```bash
 gunzip -c backups/FILE.sql.gz | docker compose -f compose.prod.yml --env-file .env.production exec -T db psql -U meowshot -d meowshot
@@ -137,60 +124,32 @@ gunzip -c backups/FILE.sql.gz | docker compose -f compose.prod.yml --env-file .e
 
 Catatan:
 
-- Volume `caddy_data` menyimpan sertifikat HTTPS. Jangan dihapus, karena Let's Encrypt membatasi jumlah penerbitan ulang.
 - Rate limit disimpan di memori API, jadi reset setiap restart. Untuk satu VPS ini cukup.
-- `IMAGE_WORKERS=1` mencegah dua foto besar di-decode bersamaan di VPS kecil.
+- `IMAGE_WORKERS=1` mencegah dua foto besar di-decode bersamaan.
+- Container API berbasis `scratch`, jadi tidak ada shell (`exec api sh` tidak bisa). Pakai `logs` untuk debugging.
 
 ## CI/CD (GitHub Actions)
 
 [.github/workflows/ci.yml](.github/workflows/ci.yml) berjalan otomatis:
 
-- **CI** (setiap push dan pull request): `gofmt`, `go vet`, semua tes dengan Postgres, dan build image Docker.
-- **CD** (push ke `main` yang lolos CI): kode dikirim ke VPS dengan rsync, lalu `docker compose up -d --build` dan cek `https://API_DOMAIN/healthz`. Job ini dilewati selama variable `VPS_HOST` belum diisi, jadi CI tetap hijau sebelum VPS siap.
+- **CI** (setiap push dan pull request): `gofmt`, `go vet`, semua tes dengan Postgres 18, dan build image Docker (base image ditarik dari Docker Hub dengan tag yang sama seperti gudang).
+- **CD** (push ke `main` yang lolos CI): kode dikirim dengan rsync ke `~/apps/meowshot-api` milik `deploy-daniel`, lalu `docker compose up -d --build` dan cek `https://API_DOMAIN/healthz`. Job ini dilewati selama `VPS_HOST` belum diisi.
 
-`.env.production` dan `backups/` hanya ada di VPS dan tidak pernah disentuh pipeline. Deploy pertama tetap manual (bagian "Deploy ke VPS" di atas), karena `.env.production` harus sudah ada di `/opt/meowshot`.
+`.env.production` dan `backups/` hanya ada di VPS dan tidak pernah disentuh pipeline, jadi langkah 2 "Deploy ke VPS" harus selesai dulu.
 
-### Setup sekali saja
+### Setup GitHub
 
-1. Di VPS, buat user khusus deploy yang boleh menjalankan Docker:
-
-```bash
-adduser --disabled-password --gecos "" deploy && usermod -aG docker deploy && apt-get install -y rsync && chown -R deploy:deploy /opt/meowshot
-```
-
-2. Di laptop, buat SSH key khusus GitHub Actions (tanpa passphrase):
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/meowshot_deploy -N "" -C github-actions
-```
-
-3. Pasang public key-nya di VPS lewat root (user `deploy` tidak punya password, jadi `ssh-copy-id` tidak bisa dipakai):
-
-```bash
-ssh root@IP_VPS "install -d -m 700 -o deploy -g deploy /home/deploy/.ssh && cat >> /home/deploy/.ssh/authorized_keys && chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 600 /home/deploy/.ssh/authorized_keys" < ~/.ssh/meowshot_deploy.pub
-```
-
-Cek berhasil (harus menampilkan daftar container, bukan minta password):
-
-```bash
-ssh -i ~/.ssh/meowshot_deploy deploy@IP_VPS docker ps
-```
-
-4. Ambil fingerprint VPS untuk `VPS_KNOWN_HOSTS` (supaya Actions tidak bisa disusupi server palsu):
-
-```bash
-ssh-keyscan -t ed25519 IP_VPS
-```
-
-5. Di GitHub: repo → **Settings** → **Secrets and variables** → **Actions**.
+Akun `deploy-daniel` dan kuncinya (`~/VPS/kunci-deploy/github-actions-deploy`) dibuat admin; caranya ada di panduan tim bagian 12. Di GitHub: repo → **Settings** → **Secrets and variables** → **Actions**:
 
 | Jenis | Nama | Isi |
 |---|---|---|
-| Secret (wajib) | `VPS_SSH_KEY` | Isi file `~/.ssh/meowshot_deploy` (private key, termasuk baris BEGIN/END) |
-| Secret atau Variable | `VPS_HOST` | IP VPS |
-| Secret atau Variable | `VPS_USER` | `deploy` |
-| Secret atau Variable | `VPS_KNOWN_HOSTS` | Output `ssh-keyscan` di langkah 4 |
-| Secret atau Variable | `API_DOMAIN` | `api.zyros.me` |
+| Secret | `VPS_SSH_KEY` | Isi file `~/VPS/kunci-deploy/github-actions-deploy` (private key, termasuk baris BEGIN/END) |
+| Variable | `VPS_HOST` | `43.134.103.221` |
+| Variable | `VPS_USER` | `deploy-daniel` |
+| Variable | `VPS_KNOWN_HOSTS` | Isi file `~/VPS/kunci-deploy/known_hosts` |
+| Variable | `API_DOMAIN` | `meowshot-api.zyros.me` |
+
+Workflow mengutamakan Variable. Secret dengan nama yang sama hanya dipakai kalau Variable-nya kosong, jadi hapus secret lama `VPS_HOST`/`VPS_USER`/`VPS_KNOWN_HOSTS`/`API_DOMAIN` supaya tidak membingungkan.
 
 Setelah itu setiap `git push` ke `main` otomatis dites lalu dideploy. Progresnya terlihat di tab **Actions**. Deploy manual bisa dipicu dari tab Actions → **CI/CD** → **Run workflow**.
 

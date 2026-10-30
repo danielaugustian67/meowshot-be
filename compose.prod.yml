@@ -1,7 +1,8 @@
-# Production on a single VPS: Postgres + API + Caddy (automatic HTTPS via Let's Encrypt).
-#   cp .env.production.example .env.production   # fill it in
+# Production on the VPS, run by deploy-daniel with rootless Docker from ~/apps/meowshot-api:
 #   docker compose -f compose.prod.yml --env-file .env.production up -d --build
-# Only Caddy is reachable from the internet; Postgres and the API stay on the internal network.
+# HTTPS comes from the server's own Caddy (block in ./Caddyfile). The API listens on 127.0.0.1
+# only, so it is reachable through Caddy and not directly. Images come from the team registry.
+# Containers count against deploy-daniel's 1.5 GB / 0.75 CPU share, so the limits fit inside it.
 
 x-logging: &logging
   driver: json-file
@@ -9,17 +10,19 @@ x-logging: &logging
 
 services:
   db:
-    image: postgres:17-alpine
+    image: 10.3.11.234:5000/postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: meowshot
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
       POSTGRES_DB: meowshot
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes: [pgdata:/var/lib/postgresql]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U meowshot -d meowshot"]
       interval: 5s
       retries: 20
+    mem_limit: 384m
+    cpus: 0.25
     logging: *logging
 
   api:
@@ -30,24 +33,12 @@ services:
       DATABASE_URL: postgres://meowshot:${POSTGRES_PASSWORD}@db:5432/meowshot?sslmode=disable
       ADDR: ":8080"
       TRUST_PROXY: "true" # Caddy sets X-Forwarded-For
+    ports: ["127.0.0.1:${API_PORT:-18080}:8080"]
     depends_on:
       db: { condition: service_healthy }
-    logging: *logging
-
-  caddy:
-    image: caddy:2.8-alpine
-    restart: unless-stopped
-    ports: ["80:80", "443:443", "443:443/udp"]
-    environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in .env.production}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data # TLS certificates; keep this volume
-      - caddy_config:/config
-    depends_on: [api]
+    mem_limit: 1024m # one large photo decode (IMAGE_WORKERS=1) needs a few hundred MB
+    cpus: 0.75
     logging: *logging
 
 volumes:
   pgdata:
-  caddy_data:
-  caddy_config:

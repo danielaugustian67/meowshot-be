@@ -4,13 +4,13 @@
 # The API itself runs on the host so presigned photo URLs point at an address the phone can reach.
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: meowshot
       POSTGRES_PASSWORD: meowshot
       POSTGRES_DB: meowshot
     ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes: [pgdata:/var/lib/postgresql]
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z

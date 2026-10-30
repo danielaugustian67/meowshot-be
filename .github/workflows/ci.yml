@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
@@ -35,8 +35,9 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+      # The team registry is only reachable on the VPS; pull the same tags from Docker Hub here.
       - name: Docker image builds
-        run: docker build -t meowshot:ci .
+        run: docker build --build-arg REGISTRY= -t meowshot:ci .
 
   deploy:
     needs: test
@@ -44,12 +45,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     concurrency: deploy-production
-    # Each setting may be stored as a secret or a variable.
+    # Settings are repository variables; a secret of the same name is only a fallback.
+    # VPS_USER is deploy-daniel, which runs rootless Docker; APP_DIR is relative to its home.
     env:
-      VPS_HOST: ${{ secrets.VPS_HOST || vars.VPS_HOST }}
-      VPS_USER: ${{ secrets.VPS_USER || vars.VPS_USER }}
-      API_DOMAIN: ${{ secrets.API_DOMAIN || vars.API_DOMAIN }}
-      APP_DIR: /opt/meowshot
+      VPS_HOST: ${{ vars.VPS_HOST || secrets.VPS_HOST }}
+      VPS_USER: ${{ vars.VPS_USER || secrets.VPS_USER }}
+      API_DOMAIN: ${{ vars.API_DOMAIN || secrets.API_DOMAIN }}
+      APP_DIR: apps/meowshot-api
     steps:
       - name: Check deploy settings
         id: cfg
@@ -79,7 +81,7 @@ jobs:
       - name: Build and restart
         if: steps.cfg.outputs.ready
         run: |
-          ssh "$TARGET" "cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production up -d --build --remove-orphans && docker image prune -f"
+          ssh "$TARGET" "export XDG_RUNTIME_DIR=/run/user/\$(id -u) && cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production up -d --build --remove-orphans && docker image prune -f"
       - name: Health check
         if: steps.cfg.outputs.ready
         run: |
@@ -88,5 +90,5 @@ jobs:
             sleep 5
           done
           echo "API did not become healthy" >&2
-          ssh "$TARGET" "cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production logs --tail 50 api"
+          ssh "$TARGET" "export XDG_RUNTIME_DIR=/run/user/\$(id -u) && cd $APP_DIR && docker compose -f compose.prod.yml --env-file .env.production logs --tail 50 api"
           exit 1

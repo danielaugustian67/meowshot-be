@@ -1,14 +1,19 @@
-FROM golang:1.27-alpine AS build
+# Base images come from the team registry on the VPS. Elsewhere (CI, a laptop), build with
+#   docker build --build-arg REGISTRY= .
+# to pull the same tag from Docker Hub.
+ARG REGISTRY=10.3.11.234:5000/
+
+FROM ${REGISTRY}golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/meowshot ./cmd/api
 
-# Alpine keeps a shell in the image for `docker compose exec api sh` debugging on the VPS.
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata && adduser -D -H meowshot
-COPY --from=build /out/meowshot /usr/local/bin/meowshot
-USER meowshot
+# No base image: the static binary only needs CA certificates for B2, SMTP and Google.
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /out/meowshot /meowshot
+USER 65534:65534
 EXPOSE 8080
-CMD ["meowshot"]
+ENTRYPOINT ["/meowshot"]
