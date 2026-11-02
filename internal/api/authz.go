@@ -86,9 +86,12 @@ type location struct {
 }
 
 // blurLocation applies the post's precision server-side (PRD §7 "Aturan Lokasi"). Owners get the
-// true point; everyone else gets EXACT, a deterministic APPROX offset, or label only for HIDDEN.
+// true point and label; everyone else gets EXACT, a deterministic APPROX offset, or nothing for HIDDEN.
 func (s *Server) blurLocation(isOwner bool, precision string, sightingID int64, lat, lng *float64, label *string, seenAt string) *location {
 	loc := &location{Label: label, SeenAt: seenAt}
+	if !isOwner && precision == "HIDDEN" {
+		loc.Label = nil
+	}
 	if lat == nil || lng == nil {
 		return loc
 	}

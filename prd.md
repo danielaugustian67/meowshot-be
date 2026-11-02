@@ -219,7 +219,7 @@ Prioritas: **P0** = wajib MVP, **P1** = sebaiknya ada, **P2** = nice to have.
 ### Aturan Lokasi
 - `EXACT`: koordinat asli
 - `APPROX`: koordinat dibulatkan/di-jitter ke radius sekitar 200 m
-- `HIDDEN`: tidak ada koordinat sama sekali, hanya label teks jika user mengisinya
+- `HIDDEN`: tidak ada koordinat dan label teks bagi orang lain; hanya pemilik post yang melihatnya
 - **Pengaburan dilakukan di server**, bukan di client. API tidak pernah mengirim koordinat asli ke viewer yang tidak berhak.
 - Koordinat asli milik user sendiri tetap tersimpan dan terlihat hanya oleh user itu.
 - **Post `PUBLIC`**: aturan presisi sama seperti level lain. `EXACT` diizinkan dan menjadi default, karena lokasi hanya menunjukkan tempat foto diambil. User tetap bisa memilih `APPROX`/`HIDDEN` per post dan mengubahnya kapan saja.

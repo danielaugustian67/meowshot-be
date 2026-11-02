@@ -399,10 +399,18 @@ func TestAPIEndToEnd(t *testing.T) {
 		e.expect(e.do(bob, "GET", path, nil), 404)
 
 		// PUBLIC + HIDDEN: everyone logged in sees it, nobody but alice gets coordinates.
+		e.expect(e.do(alice, "PATCH", fmt.Sprintf("/v1/sightings/%d", sightingID), map[string]any{"label": "Menteng"}), 200)
 		e.expect(e.do(alice, "PATCH", path, map[string]any{"visibility": "PUBLIC", "loc_precision": "HIDDEN"}), 200)
 		r = e.expect(e.do(carol, "GET", path, nil), 200)
 		if r.get("location.lat") != nil || r.get("location.lng") != nil {
 			t.Fatalf("HIDDEN leaked coordinates: %s", r.Raw)
+		}
+		if r.get("location.label") != nil {
+			t.Fatalf("HIDDEN leaked the place name: %s", r.Raw)
+		}
+		owner = e.expect(e.do(alice, "GET", path, nil), 200)
+		if owner.str("location.label") == "" || owner.get("shared_location.label") != nil {
+			t.Fatalf("HIDDEN owner view: %s", owner.Raw)
 		}
 		ex := e.expect(e.do(carol, "GET", "/v1/explore", nil), 200)
 		if ex.num("items.0.id") != float64(postID) {
