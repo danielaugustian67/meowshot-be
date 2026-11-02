@@ -12,12 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/sync/errgroup"
+
 	"meowshot/internal/media"
 )
 
 // readUpload reads one multipart file field, bounded by MAX_UPLOAD_MB.
 // Other form fields stay available through r.FormValue afterwards.
 func (s *Server) readUpload(w http.ResponseWriter, r *http.Request, field string) ([]byte, error) {
+	start := time.Now()
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadBytes+1<<20)
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		var tooBig *http.MaxBytesError
@@ -34,7 +38,10 @@ func (s *Server) readUpload(w http.ResponseWriter, r *http.Request, field string
 	if hdr.Size > s.cfg.MaxUploadBytes {
 		return nil, &Error{http.StatusRequestEntityTooLarge, "file_too_large", fmt.Sprintf("max upload size is %d MB", s.cfg.MaxUploadBytes>>20)}
 	}
-	return io.ReadAll(io.LimitReader(f, s.cfg.MaxUploadBytes))
+	data, err := io.ReadAll(io.LimitReader(f, s.cfg.MaxUploadBytes))
+	// With "store photo" this splits an upload's dur_ms: the rest is the database.
+	s.log.Info("read upload", "read_ms", time.Since(start).Milliseconds(), "bytes", len(data), "req_id", middleware.GetReqID(r.Context()))
+	return data, err
 }
 
 // withImageSlot runs fn while holding one of the limited image-processing slots.
@@ -61,6 +68,7 @@ type storedPhoto struct {
 
 // storePhoto processes an upload (EXIF stripped, WebP renditions) and writes both objects to B2.
 func (s *Server) storePhoto(ctx context.Context, uid int64, data []byte) (*storedPhoto, error) {
+	start := time.Now()
 	var res *media.Result
 	err := s.withImageSlot(ctx, func() (err error) {
 		res, err = media.Process(data)
@@ -69,15 +77,19 @@ func (s *Server) storePhoto(ctx context.Context, uid int64, data []byte) (*store
 	if err != nil {
 		return nil, mediaError(err)
 	}
+	processed := time.Now()
 	base := objectKey(uid, "p")
 	sp := &storedPhoto{key: base + ".webp", thumbKey: base + "_t.webp", res: res}
-	if err := s.store.Put(ctx, sp.key, res.Display, "image/webp"); err != nil {
+	// Both at once: B2 is far away, so one after the other waits out its latency twice.
+	var puts errgroup.Group
+	puts.Go(func() error { return s.store.Put(ctx, sp.key, res.Display, "image/webp") })
+	puts.Go(func() error { return s.store.Put(ctx, sp.thumbKey, res.Thumb, "image/webp") })
+	if err := puts.Wait(); err != nil {
+		s.deleteObjects(sp.keys())
 		return nil, err
 	}
-	if err := s.store.Put(ctx, sp.thumbKey, res.Thumb, "image/webp"); err != nil {
-		s.deleteObjects([]string{sp.key})
-		return nil, err
-	}
+	s.log.Info("store photo", "process_ms", processed.Sub(start).Milliseconds(), "put_ms", time.Since(processed).Milliseconds(),
+		"display_bytes", len(res.Display), "thumb_bytes", len(res.Thumb), "req_id", middleware.GetReqID(ctx))
 	return sp, nil
 }
 

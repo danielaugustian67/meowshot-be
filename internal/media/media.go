@@ -216,7 +216,8 @@ func fit(img image.Image, edge int) image.Image {
 
 func encode(img image.Image, quality int) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := webp.Encode(&buf, img, webp.Options{Quality: quality, Method: 4}); err != nil {
+	// Method 2 is about 3x faster than 4 for files only about 4% larger; encoding is the slowest step of an upload.
+	if err := webp.Encode(&buf, img, webp.Options{Quality: quality, Method: 2}); err != nil {
 		return nil, fmt.Errorf("encode webp: %w", err)
 	}
 	return buf.Bytes(), nil

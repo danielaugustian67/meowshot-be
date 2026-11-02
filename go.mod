@@ -15,6 +15,7 @@ require (
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
+	golang.org/x/sync v0.24.0
 	golang.org/x/time v0.16.0
 )
 
@@ -35,7 +36,6 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
