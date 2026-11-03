@@ -166,7 +166,7 @@ Setelah itu setiap `git push` ke `main` otomatis dites lalu dideploy. Progresnya
 2. Isi `GOOGLE_CLIENT_IDS` dengan semua client ID itu, dipisah koma.
 3. Di app, pakai `@react-native-google-signin/google-signin` (butuh development build, tidak jalan di Expo Go) dengan `webClientId` = Web client ID. Setelah sign-in, kirim `idToken` ke `POST /v1/auth/google`.
 
-Akun Google dicocokkan lewat Google `sub`, lalu lewat email. Kalau email itu sudah terdaftar via password tapi belum pernah diverifikasi, password lama dihapus saat Google di-link (mencegah pembajakan akun yang didaftarkan duluan oleh orang lain).
+Akun Google dicocokkan lewat Google `sub`, lalu lewat email. Kalau email itu sudah terdaftar via password tapi belum pernah diverifikasi (akun dari sebelum ada kode verifikasi saat daftar), password lama dihapus saat Google di-link (mencegah pembajakan akun yang didaftarkan duluan oleh orang lain).
 
 ## Panduan integrasi mobile
 
@@ -212,7 +212,9 @@ Semua di bawah prefix `/v1`.
 
 | Method & path | Keterangan | PRD |
 |---|---|---|
-| `POST /auth/register` | `{email, password, username, invite_code?}` | AUTH-1, AUTH-5 |
+| `POST /auth/register` | `{email, password, username, invite_code?}` → 202 `{verification_id, email, expires_in}`, kode 6 digit via email; akun belum dibuat | AUTH-1, AUTH-5 |
+| `POST /auth/register/verify` | `{verification_id, code}` → 201 token; akun dibuat di sini | AUTH-1 |
+| `POST /auth/register/resend` | `{verification_id}` → kode baru, sekali per menit | AUTH-1 |
 | `POST /auth/login` | `{email (atau username), password}` | AUTH-1 |
 | `POST /auth/google` | `{id_token, invite_code?}` → `is_new_user` untuk menawarkan ganti username | AUTH-1 |
 | `POST /auth/refresh`, `POST /auth/logout` | `{refresh_token}` | |

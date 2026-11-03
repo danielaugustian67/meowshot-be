@@ -214,10 +214,19 @@ func (e *env) expect(r resp, status int) resp {
 
 func (e *env) register(name string) (token string, id int64) {
 	e.t.Helper()
-	r := e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{
+	p := e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{
 		"email": name + "@example.com", "password": "password-" + name, "username": name,
+	}), 202)
+	r := e.expect(e.do("", "POST", "/v1/auth/register/verify", map[string]any{
+		"verification_id": p.str("verification_id"), "code": e.lastCode(),
 	}), 201)
 	return r.str("access_token"), int64(r.num("user.id"))
+}
+
+func (e *env) lastCode() string {
+	e.mail.mu.Lock()
+	defer e.mail.mu.Unlock()
+	return regexp.MustCompile(`\d{6}`).FindString(e.mail.last)
 }
 
 func TestAPIEndToEnd(t *testing.T) {
@@ -248,6 +257,75 @@ func TestAPIEndToEnd(t *testing.T) {
 		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "bob", "password": "x"}), 401)
 		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "bob", "password": "password-bob"}), 429)
 		e.expect(e.do("", "POST", "/v1/auth/refresh", map[string]any{"refresh_token": r.str("refresh_token")}), 200)
+	})
+
+	t.Run("register needs the emailed code", func(t *testing.T) {
+		signUp := func(password string) resp {
+			return e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{
+				"email": "Zoe@example.com", "password": password, "username": "zoe",
+			}), 202)
+		}
+		verify := func(id, code string, status int) resp {
+			return e.expect(e.do("", "POST", "/v1/auth/register/verify", map[string]any{"verification_id": id, "code": code}), status)
+		}
+		mine := signUp("password-zoe")
+		code := e.lastCode()
+		// Nothing exists until the code is confirmed.
+		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "zoe", "password": "password-zoe"}), 401)
+		wrong := "000000"
+		if code == wrong {
+			wrong = "000001"
+		}
+		verify(mine.str("verification_id"), wrong, 400)
+		verify("not-a-token", code, 400)
+
+		// A second sign-up for the same email cannot take over the first one's code.
+		attacker := signUp("password-attacker")
+		attackerCode := e.lastCode()
+		if code != attackerCode {
+			verify(attacker.str("verification_id"), code, 400)
+		}
+
+		// Resending is limited to once a minute, then replaces the code.
+		e.expect(e.do("", "POST", "/v1/auth/register/resend", map[string]any{"verification_id": mine.str("verification_id")}), 429)
+		e.expect(e.do("", "POST", "/v1/auth/register/resend", map[string]any{"verification_id": "not-a-token"}), 400)
+		if _, err := e.s.db.Exec(context.Background(), `UPDATE pending_signups SET last_sent_at = now() - interval '2 minutes'`); err != nil {
+			t.Fatal(err)
+		}
+		e.expect(e.do("", "POST", "/v1/auth/register/resend", map[string]any{"verification_id": mine.str("verification_id")}), 204)
+		newCode := e.lastCode()
+		if newCode != code {
+			verify(mine.str("verification_id"), code, 400)
+		}
+
+		r := verify(mine.str("verification_id"), newCode, 201)
+		if r.str("user.email") != "zoe@example.com" || !r.get("is_new_user").(bool) {
+			t.Fatalf("unexpected user: %s", r.Raw)
+		}
+		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "zoe", "password": "password-zoe"}), 200)
+		e.expect(e.do("", "POST", "/v1/auth/login", map[string]any{"email": "zoe", "password": "password-attacker"}), 401)
+		// The other pending sign-up died with the account, and the email is now taken.
+		verify(attacker.str("verification_id"), attackerCode, 400)
+		e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{"email": "zoe@example.com", "password": "password1", "username": "zoe2"}), 409)
+		e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{"email": "zoe2@example.com", "password": "password1", "username": "zoe"}), 409)
+
+		// Wrong guesses burn the code, even the right one afterwards.
+		p := e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{"email": "yuki@example.com", "password": "password-yuki", "username": "yuki"}), 202)
+		yukiCode := e.lastCode()
+		guess := "000000"
+		if yukiCode == guess {
+			guess = "000001"
+		}
+		for range 5 {
+			verify(p.str("verification_id"), guess, 400)
+		}
+		verify(p.str("verification_id"), yukiCode, 400)
+
+		// Too many sign-ups for one email stop sending mail.
+		for range 4 {
+			e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{"email": "yuki@example.com", "password": "password-yuki", "username": "yuki"}), 202)
+		}
+		e.expect(e.do("", "POST", "/v1/auth/register", map[string]any{"email": "yuki@example.com", "password": "password-yuki", "username": "yuki"}), 429)
 	})
 
 	t.Run("auth", func(t *testing.T) {
@@ -286,7 +364,10 @@ func TestAPIEndToEnd(t *testing.T) {
 			t.Fatalf("unexpected google signup: %s", r.Raw)
 		}
 		e.expect(e.do("", "POST", "/v1/auth/google", map[string]any{"id_token": "forged"}), 401)
-		// Email registrations are unverified, so linking Google drops the password and its sessions.
+		// Accounts from before sign-up codes are unverified, so linking Google drops the password and its sessions.
+		if _, err := e.s.db.Exec(context.Background(), `UPDATE users SET email_verified = FALSE WHERE id = $1`, aliceID); err != nil {
+			t.Fatal(err)
+		}
 		r = e.expect(e.do("", "POST", "/v1/auth/google", map[string]any{"id_token": "g-alice"}), 200)
 		if int64(r.num("user.id")) != aliceID || r.get("is_new_user") != false || r.get("user.google_linked") != true || r.get("user.has_password") != false {
 			t.Fatalf("expected google to link to alice: %s", r.Raw)

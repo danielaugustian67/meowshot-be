@@ -1,4 +1,4 @@
-// Package mail sends transactional email (password reset codes).
+// Package mail sends transactional email (password reset and sign-up codes).
 package mail
 
 import (

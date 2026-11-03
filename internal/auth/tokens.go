@@ -69,7 +69,7 @@ func HashOpaqueToken(token string) []byte {
 	return sum[:]
 }
 
-// NewResetCode returns a 6-digit numeric code for password reset emails.
+// NewResetCode returns a 6-digit numeric code for password reset and sign-up emails.
 func NewResetCode() (string, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
 	if err != nil {
@@ -82,5 +82,12 @@ func NewResetCode() (string, error) {
 func (t *Tokens) HashResetCode(userID int64, code string) []byte {
 	m := hmac.New(sha256.New, t.secret)
 	fmt.Fprintf(m, "reset:%d:%s", userID, code)
+	return m.Sum(nil)
+}
+
+// HashSignupCode is HashResetCode for a pending sign-up, identified by its token hash.
+func (t *Tokens) HashSignupCode(tokenHash []byte, code string) []byte {
+	m := hmac.New(sha256.New, t.secret)
+	fmt.Fprintf(m, "signup:%x:%s", tokenHash, code)
 	return m.Sum(nil)
 }

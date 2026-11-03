@@ -95,10 +95,12 @@ func (s *Server) Routes() http.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
 			// Mobile carriers put many users behind one IP (CGNAT), so the per-IP limit is generous;
-			// password guessing is capped per account in login, reset codes per code in the database.
+			// password guessing is capped per account in login, reset and sign-up codes per code in the database.
 			r.Group(func(r chi.Router) {
 				r.Use(s.rateLimitIP(s.limitAuth))
 				r.Post("/register", s.h(s.register))
+				r.Post("/register/verify", s.h(s.verifyRegistration))
+				r.Post("/register/resend", s.h(s.resendRegistrationCode))
 				r.Post("/login", s.h(s.login))
 				r.Post("/google", s.h(s.loginGoogle))
 				r.Post("/password/forgot", s.h(s.forgotPassword))

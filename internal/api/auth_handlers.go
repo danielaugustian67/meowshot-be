@@ -20,6 +20,20 @@ import (
 
 var usernameRe = regexp.MustCompile(`^[a-z0-9_.]{3,30}$`)
 
+const (
+	signupCodeTTL = 15 * time.Minute
+	// Caps emails per pending sign-up, and new sign-ups per email per hour.
+	maxSignupSends = 5
+)
+
+func errEmailTaken() *Error {
+	return errConflict("email_taken", "an account with this email already exists")
+}
+
+func errUsernameTaken() *Error {
+	return errConflict("username_taken", "this username is already taken")
+}
+
 func normalizeUsername(u string) (string, error) {
 	u = strings.ToLower(strings.TrimSpace(u))
 	if !usernameRe.MatchString(u) {
@@ -86,6 +100,9 @@ func (s *Server) issueTokens(ctx context.Context, userID int64, isNew bool) (*to
 	}, nil
 }
 
+// register holds the sign-up in pending_signups and emails a code; verifyRegistration creates the account.
+// The returned verification_id ties the code to this request, so nobody else's sign-up for the
+// same email can claim it (and put their own password on the account).
 func (s *Server) register(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		Email      string `json:"email"`
@@ -110,26 +127,168 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) error {
 	if err := s.checkInvite(in.InviteCode); err != nil {
 		return err
 	}
+	ctx := r.Context()
+	var emailTaken, usernameTaken bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE email = $1), EXISTS (SELECT 1 FROM users WHERE username = $2)`,
+		email, username).Scan(&emailTaken, &usernameTaken); err != nil {
+		return err
+	}
+	if emailTaken {
+		return errEmailTaken()
+	}
+	if usernameTaken {
+		return errUsernameTaken()
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM pending_signups WHERE expires_at < now() AND created_at < now() - interval '1 hour'`); err != nil {
+		return err
+	}
+	var recent int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM pending_signups WHERE email = $1 AND created_at > now() - interval '1 hour'`,
+		email).Scan(&recent); err != nil {
+		return err
+	}
+	if recent >= maxSignupSends {
+		return errTooMany()
+	}
 	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
 		return err
 	}
+	token, tokenHash, err := auth.NewOpaqueToken()
+	if err != nil {
+		return err
+	}
+	code, err := auth.NewResetCode()
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO pending_signups (token_hash, email, username, password_hash, code_hash, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		tokenHash, email, username, hash, s.tokens.HashSignupCode(tokenHash, code), time.Now().Add(signupCodeTTL)); err != nil {
+		return err
+	}
+	if err := s.sendSignupCode(email, code); err != nil {
+		if _, delErr := s.db.Exec(ctx, `DELETE FROM pending_signups WHERE token_hash = $1`, tokenHash); delErr != nil {
+			s.log.Error("drop unsent signup", "err", delErr)
+		}
+		return err
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"verification_id": token, "email": email, "expires_in": int(signupCodeTTL.Seconds()),
+	})
+	return nil
+}
+
+// sendSignupCode fails the request when the email cannot go out: unlike a reset, the user is waiting for it right now.
+func (s *Server) sendSignupCode(email, code string) error {
+	body := fmt.Sprintf("Kode verifikasi Meowshot kamu: %s\n\nKode berlaku 15 menit. Abaikan email ini jika kamu tidak mendaftar.\n", code)
+	if err := s.mail.Send(email, "Kode verifikasi Meowshot", body); err != nil {
+		s.log.Error("send signup email", "err", err)
+		return &Error{http.StatusServiceUnavailable, "email_failed", "the verification email could not be sent"}
+	}
+	return nil
+}
+
+// verifyRegistration creates the account once the emailed code is confirmed.
+func (s *Server) verifyRegistration(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		VerificationID string `json:"verification_id"`
+		Code           string `json:"code"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		return err
+	}
+	invalid := &Error{http.StatusBadRequest, "invalid_code", "the verification code is invalid or expired"}
+	tokenHash := auth.HashOpaqueToken(in.VerificationID)
+	ctx := r.Context()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var pendingID int64
+	var email, username, passwordHash string
+	var codeHash []byte
+	var attempts int
+	err = tx.QueryRow(ctx, `SELECT id, email, username, password_hash, code_hash, attempts FROM pending_signups
+		WHERE token_hash = $1 AND expires_at > now() FOR UPDATE`, tokenHash).
+		Scan(&pendingID, &email, &username, &passwordHash, &codeHash, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return invalid
+	}
+	if err != nil {
+		return err
+	}
+	if attempts >= 5 || subtle.ConstantTimeCompare(codeHash, s.tokens.HashSignupCode(tokenHash, strings.TrimSpace(in.Code))) != 1 {
+		if _, err := tx.Exec(ctx, `UPDATE pending_signups SET attempts = attempts + 1 WHERE id = $1`, pendingID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		return invalid
+	}
 	var id int64
-	err = s.db.QueryRow(r.Context(), `INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id`,
-		username, email, hash).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO users (username, email, email_verified, password_hash) VALUES ($1, $2, TRUE, $3) RETURNING id`,
+		username, email, passwordHash).Scan(&id)
 	switch {
 	case isUniqueViolation(err, "users_email_key"):
-		return errConflict("email_taken", "an account with this email already exists")
+		return errEmailTaken()
 	case isUniqueViolation(err, "users_username_key"):
-		return errConflict("username_taken", "this username is already taken")
+		return errUsernameTaken()
 	case err != nil:
 		return err
 	}
-	resp, err := s.issueTokens(r.Context(), id, true)
+	if _, err := tx.Exec(ctx, `DELETE FROM pending_signups WHERE email = $1`, email); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	resp, err := s.issueTokens(ctx, id, true)
 	if err != nil {
 		return err
 	}
 	return created(w, resp)
+}
+
+// resendRegistrationCode replaces the code, so only the newest email works.
+func (s *Server) resendRegistrationCode(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		VerificationID string `json:"verification_id"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		return err
+	}
+	tokenHash := auth.HashOpaqueToken(in.VerificationID)
+	code, err := auth.NewResetCode()
+	if err != nil {
+		return err
+	}
+	ctx := r.Context()
+	var email string
+	err = s.db.QueryRow(ctx, `UPDATE pending_signups
+		SET code_hash = $2, attempts = 0, sends = sends + 1, last_sent_at = now(), expires_at = $3
+		WHERE token_hash = $1 AND sends < $4 AND last_sent_at < now() - interval '1 minute' RETURNING email`,
+		tokenHash, s.tokens.HashSignupCode(tokenHash, code), time.Now().Add(signupCodeTTL), maxSignupSends).Scan(&email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pending_signups WHERE token_hash = $1)`, tokenHash).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return errTooMany()
+		}
+		return &Error{http.StatusBadRequest, "invalid_code", "the verification code is invalid or expired"}
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.sendSignupCode(email, code); err != nil {
+		return err
+	}
+	return noContent(w)
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
