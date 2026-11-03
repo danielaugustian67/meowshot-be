@@ -20,16 +20,17 @@ import (
 // photos or sightings. Every other handler here filters on user_id.
 
 type photoJSON struct {
-	ID        int64      `json:"id"`
-	CatID     int64      `json:"cat_id"`
-	PostID    *int64     `json:"post_id"`
-	URL       *string    `json:"url"`
-	ThumbURL  *string    `json:"thumb_url"`
-	Width     int        `json:"width"`
-	Height    int        `json:"height"`
-	Caption   string     `json:"caption"`
-	TakenAt   *time.Time `json:"taken_at"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID         int64            `json:"id"`
+	CatID      int64            `json:"cat_id"`
+	PostID     *int64           `json:"post_id"`
+	URL        *string          `json:"url"`
+	ThumbURL   *string          `json:"thumb_url"`
+	Width      int              `json:"width"`
+	Height     int              `json:"height"`
+	Caption    string           `json:"caption"`
+	TakenAt    *time.Time       `json:"taken_at"`
+	CreatedAt  time.Time        `json:"created_at"`
+	Decoration *photoDecoration `json:"decoration"`
 }
 
 type sightingJSON struct {
@@ -417,7 +418,7 @@ func (s *Server) listCatPhotos(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	pg := readPage(r, 30, 100)
-	rows, err := s.db.Query(ctx, `SELECT id, cat_id, post_id, key, thumb_key, width, height, caption, taken_at, created_at
+	rows, err := s.db.Query(ctx, `SELECT id, cat_id, post_id, key, thumb_key, width, height, caption, taken_at, created_at, decoration
 		FROM photos WHERE cat_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, id, pg.cursorArg(), pg.Limit+1)
 	if err != nil {
 		return err
@@ -435,7 +436,7 @@ func (s *Server) scanPhotos(ctx context.Context, rows pgx.Rows) ([]photoJSON, er
 	for rows.Next() {
 		var p photoJSON
 		var key, thumb string
-		if err := rows.Scan(&p.ID, &p.CatID, &p.PostID, &key, &thumb, &p.Width, &p.Height, &p.Caption, &p.TakenAt, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.CatID, &p.PostID, &key, &thumb, &p.Width, &p.Height, &p.Caption, &p.TakenAt, &p.CreatedAt, &p.Decoration); err != nil {
 			return nil, err
 		}
 		out = append(out, s.photo(ctx, p, key, thumb))
@@ -481,7 +482,7 @@ func (s *Server) uploadCatPhoto(w http.ResponseWriter, r *http.Request) error {
 
 	var resp photoUploadResponse
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		p, err := insertPhoto(ctx, tx, uid, catID, sp, caption)
+		p, err := insertPhoto(ctx, tx, uid, catID, sp, caption, nil)
 		if err != nil {
 			return err
 		}
@@ -501,11 +502,11 @@ func (s *Server) uploadCatPhoto(w http.ResponseWriter, r *http.Request) error {
 	return created(w, resp)
 }
 
-func insertPhoto(ctx context.Context, tx pgx.Tx, uid, catID int64, sp *storedPhoto, caption string) (photoJSON, error) {
-	p := photoJSON{CatID: catID, Width: sp.res.Width, Height: sp.res.Height, Caption: caption, TakenAt: sp.res.TakenAt}
-	err := tx.QueryRow(ctx, `INSERT INTO photos (user_id, cat_id, key, thumb_key, width, height, caption, taken_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
-		uid, catID, sp.key, sp.thumbKey, p.Width, p.Height, caption, p.TakenAt).Scan(&p.ID, &p.CreatedAt)
+func insertPhoto(ctx context.Context, tx pgx.Tx, uid, catID int64, sp *storedPhoto, caption string, decoration *photoDecoration) (photoJSON, error) {
+	p := photoJSON{CatID: catID, Width: sp.res.Width, Height: sp.res.Height, Caption: caption, TakenAt: sp.res.TakenAt, Decoration: decoration}
+	err := tx.QueryRow(ctx, `INSERT INTO photos (user_id, cat_id, key, thumb_key, width, height, caption, taken_at, decoration)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+		uid, catID, sp.key, sp.thumbKey, p.Width, p.Height, caption, p.TakenAt, decoration).Scan(&p.ID, &p.CreatedAt)
 	if err != nil {
 		return p, err
 	}
@@ -542,7 +543,7 @@ func (s *Server) updatePhoto(w http.ResponseWriter, r *http.Request) error {
 	}
 	ctx := r.Context()
 	rows, err := s.db.Query(ctx, `UPDATE photos SET caption = $3 WHERE id = $1 AND user_id = $2
-		RETURNING id, cat_id, post_id, key, thumb_key, width, height, caption, taken_at, created_at`, id, userFrom(ctx).ID, in.Caption)
+		RETURNING id, cat_id, post_id, key, thumb_key, width, height, caption, taken_at, created_at, decoration`, id, userFrom(ctx).ID, in.Caption)
 	if err != nil {
 		return err
 	}
@@ -751,6 +752,10 @@ func (s *Server) capture(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	caption := strings.TrimSpace(r.FormValue("caption"))
+	decoration, err := parseDecoration(r.FormValue("decoration"))
+	if err != nil {
+		return err
+	}
 	var catID int64
 	if v := r.FormValue("cat_id"); v != "" {
 		if catID, err = strconv.ParseInt(v, 10, 64); err != nil {
@@ -773,7 +778,7 @@ func (s *Server) capture(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 		}
-		p, err := insertPhoto(ctx, tx, uid, catID, sp, caption)
+		p, err := insertPhoto(ctx, tx, uid, catID, sp, caption, decoration)
 		if err != nil {
 			return err
 		}

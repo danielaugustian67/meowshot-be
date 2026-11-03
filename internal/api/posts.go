@@ -17,12 +17,13 @@ var validPrecision = map[string]bool{"EXACT": true, "APPROX": true, "HIDDEN": tr
 var AllowedReactions = map[string]bool{"❤️": true, "😻": true, "😹": true, "🐾": true, "👍": true, "😢": true}
 
 type postPhotoJSON struct {
-	ID       int64   `json:"id"`
-	URL      *string `json:"url"`
-	ThumbURL *string `json:"thumb_url"`
-	Width    int     `json:"width"`
-	Height   int     `json:"height"`
-	Caption  string  `json:"caption"`
+	ID         int64            `json:"id"`
+	URL        *string          `json:"url"`
+	ThumbURL   *string          `json:"thumb_url"`
+	Width      int              `json:"width"`
+	Height     int              `json:"height"`
+	Caption    string           `json:"caption"`
+	Decoration *photoDecoration `json:"decoration"`
 }
 
 type postJSON struct {
@@ -107,7 +108,7 @@ func (s *Server) queryPosts(ctx context.Context, viewer int64, extra string, arg
 	for _, p := range posts {
 		ids = append(ids, p.ID)
 	}
-	prow, err := s.db.Query(ctx, `SELECT post_id, id, key, thumb_key, width, height, caption FROM photos
+	prow, err := s.db.Query(ctx, `SELECT post_id, id, key, thumb_key, width, height, caption, decoration FROM photos
 		WHERE post_id = ANY($1) ORDER BY post_id, post_position, id`, ids)
 	if err != nil {
 		return nil, err
@@ -117,7 +118,7 @@ func (s *Server) queryPosts(ctx context.Context, viewer int64, extra string, arg
 		var postID int64
 		var ph postPhotoJSON
 		var key, thumb string
-		if err := prow.Scan(&postID, &ph.ID, &key, &thumb, &ph.Width, &ph.Height, &ph.Caption); err != nil {
+		if err := prow.Scan(&postID, &ph.ID, &key, &thumb, &ph.Width, &ph.Height, &ph.Caption, &ph.Decoration); err != nil {
 			return nil, err
 		}
 		ph.URL = s.signed(ctx, &key)
