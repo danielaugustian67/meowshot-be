@@ -228,7 +228,7 @@ Semua di bawah prefix `/v1`.
 | `POST /cats/{id}/merge` | `{into_cat_id}` | QC-2 |
 | `PUT /cats/{id}/cover` | `{photo_id}` | CAT-3 |
 | `GET/POST /cats/{id}/photos` | upload multipart `photo, caption?, add_sighting?, lat?, lng?, label?, location_source?, seen_at?` | CAT-2 |
-| `PATCH/DELETE /photos/{id}` | `{caption}` | CAT-3 |
+| `PATCH/DELETE /photos/{id}` | `{caption?, decoration?}`; `decoration: null` menghapus frame dan stiker | CAT-3 |
 | `GET/POST /cats/{id}/sightings`, `PATCH/DELETE /sightings/{id}` | "ketemu lagi" `{lat?, lng?, label?, seen_at?}` | LOC-1, LOC-3, LOC-4 |
 | `POST /captures` | quick capture multipart (lihat di atas), `cat_id?` untuk langsung ke kucing yang ada | QC-1, QC-2, LOC-2 |
 | `GET /cats/nearby?lat=&lng=&radius_m=` | saran "apakah ini si Oyen?" | LOC-7 |

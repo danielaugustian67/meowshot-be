@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
@@ -359,8 +360,13 @@ func (s *Server) mergeCat(w http.ResponseWriter, r *http.Request) error {
 			`UPDATE photos SET cat_id = $2 WHERE cat_id = $1`,
 			`UPDATE sightings SET cat_id = $2 WHERE cat_id = $1`,
 			`UPDATE posts SET cat_id = $2 WHERE cat_id = $1`,
-			`UPDATE cats SET cover_photo_id = COALESCE(cover_photo_id, (SELECT cover_photo_id FROM cats WHERE id = $1)),
-				updated_at = now() WHERE id = $2`,
+			// Nothing the user wrote about either cat is lost: the name fills a gap, and the notes are joined.
+			`UPDATE cats c SET cover_photo_id = COALESCE(c.cover_photo_id, src.cover_photo_id),
+				name = COALESCE(c.name, src.name),
+				notes = LEFT(NULLIF(CONCAT_WS(E'\n\n', c.notes, src.notes), ''), 2000),
+				is_favorite = c.is_favorite OR src.is_favorite,
+				updated_at = now()
+				FROM cats src WHERE src.id = $1 AND c.id = $2`,
 		} {
 			if _, err := tx.Exec(ctx, q, id, in.IntoCatID); err != nil {
 				return err
@@ -532,18 +538,32 @@ func (s *Server) updatePhoto(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var in struct {
-		Caption string `json:"caption"`
+		Caption    *string         `json:"caption"`
+		Decoration json.RawMessage `json:"decoration"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		return err
 	}
-	in.Caption = strings.TrimSpace(in.Caption)
-	if len([]rune(in.Caption)) > 500 {
-		return errValidation("caption must be at most 500 characters")
+	if in.Caption != nil {
+		c := strings.TrimSpace(*in.Caption)
+		if len([]rune(c)) > 500 {
+			return errValidation("caption must be at most 500 characters")
+		}
+		in.Caption = &c
+	}
+	// Absent keeps the decoration; null or an empty one removes it.
+	var decoration *photoDecoration
+	if in.Decoration != nil {
+		var err error
+		if decoration, err = parseDecoration(string(in.Decoration)); err != nil {
+			return err
+		}
 	}
 	ctx := r.Context()
-	rows, err := s.db.Query(ctx, `UPDATE photos SET caption = $3 WHERE id = $1 AND user_id = $2
-		RETURNING id, cat_id, post_id, key, thumb_key, width, height, caption, taken_at, created_at, decoration`, id, userFrom(ctx).ID, in.Caption)
+	rows, err := s.db.Query(ctx, `UPDATE photos SET caption = COALESCE($3, caption),
+		decoration = CASE WHEN $4 THEN $5::jsonb ELSE decoration END WHERE id = $1 AND user_id = $2
+		RETURNING id, cat_id, post_id, key, thumb_key, width, height, caption, taken_at, created_at, decoration`,
+		id, userFrom(ctx).ID, in.Caption, in.Decoration != nil, decoration)
 	if err != nil {
 		return err
 	}

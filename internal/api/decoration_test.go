@@ -66,3 +66,49 @@ func TestPhotoDecoration(t *testing.T) {
 		}
 	}
 }
+
+func TestEditPhotoDecoration(t *testing.T) {
+	e := setup(t)
+	alice, _ := e.register("alice")
+	bob, _ := e.register("bob")
+	img := mediatest.JPEGWithGPS(t, 800, 600, 1, 1)
+	r := e.expect(e.upload(alice, "/v1/captures", map[string]string{"caption": "halo"}, img), 201)
+	catID, photoID := int64(r.num("cat.id")), int64(r.num("photo.id"))
+	path := fmt.Sprintf("/v1/photos/%d", photoID)
+	deco := map[string]any{"paper": 2, "stickers": []map[string]any{{"id": "bow", "x": 0.5, "y": 0.5, "scale": 0.2, "rotation": 10}}}
+
+	// Changing the decoration leaves the caption alone, and the post shows it at once.
+	r = e.expect(e.do(alice, "POST", "/v1/posts", map[string]any{"cat_id": catID, "photo_ids": []int64{photoID}, "visibility": "PUBLIC"}), 201)
+	postPath := fmt.Sprintf("/v1/posts/%d", int64(r.num("id")))
+	r = e.expect(e.do(alice, "PATCH", path, map[string]any{"decoration": deco}), 200)
+	if r.num("decoration.paper") != 2 || r.str("decoration.stickers.0.id") != "bow" || r.str("caption") != "halo" {
+		t.Fatalf("edited decoration: %s", r.Raw)
+	}
+	r = e.expect(e.do(bob, "GET", postPath, nil), 200)
+	if r.num("photos.0.decoration.paper") != 2 {
+		t.Fatalf("post after edit: %s", r.Raw)
+	}
+
+	// Without the field it stays, and the caption can still be cleared.
+	r = e.expect(e.do(alice, "PATCH", path, map[string]any{"caption": ""}), 200)
+	if r.num("decoration.paper") != 2 || r.str("caption") != "" {
+		t.Fatalf("caption edit: %s", r.Raw)
+	}
+
+	// Someone else's photo can't be touched, and a bad one changes nothing.
+	e.expect(e.do(bob, "PATCH", path, map[string]any{"decoration": nil}), 404)
+	e.expect(e.do(alice, "PATCH", path, map[string]any{"decoration": map[string]any{"paper": 99}}), 422)
+	r = e.expect(e.do(alice, "GET", fmt.Sprintf("/v1/cats/%d/photos", catID), nil), 200)
+	if r.num("items.0.decoration.paper") != 2 {
+		t.Fatalf("after refused edits: %s", r.Raw)
+	}
+
+	// Null and an empty one both remove it.
+	for _, empty := range []any{nil, map[string]any{}} {
+		e.expect(e.do(alice, "PATCH", path, map[string]any{"decoration": deco}), 200)
+		r = e.expect(e.do(alice, "PATCH", path, map[string]any{"decoration": empty}), 200)
+		if !strings.Contains(string(r.Raw), `"decoration":null`) {
+			t.Fatalf("removed decoration: %s", r.Raw)
+		}
+	}
+}
